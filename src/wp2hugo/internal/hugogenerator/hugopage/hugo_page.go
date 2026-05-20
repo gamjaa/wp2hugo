@@ -29,6 +29,12 @@ const (
 	TagName      = "tags"
 )
 
+type MetadataOptions struct {
+	UsePostIDSlug       bool
+	CleanFrontMatter     bool
+	CloudflareRedirects  bool
+}
+
 type Page struct {
 	// This is the original URL of the page from the WordPress site
 	absoluteURL url.URL
@@ -84,10 +90,10 @@ func NewPage(provider ImageURLProvider, pageURL url.URL, author string, title st
 	footnotes []wpparser.Footnote,
 	htmlContent string, guid *rss.GUID, featuredImageID *string, postFormat *string,
 	customMetaData []wpparser.CustomMetaDatum, taxinomies []wpparser.TaxonomyInfo,
-	postID string, parentPostID *string,
+	postID string, parentPostID *string, options MetadataOptions,
 ) (*Page, error) {
 	metadata, err := getMetadata(provider, pageURL, author, title, publishDate, isDraft, categories, tags, guid,
-		featuredImageID, postFormat, customMetaData, taxinomies, postID, parentPostID)
+		featuredImageID, postFormat, customMetaData, taxinomies, postID, parentPostID, options)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +119,19 @@ func (page *Page) Markdown() string {
 func (page *Page) Replace(replacementMap map[string]string) {
 	for old, new := range replacementMap {
 		page.markdown = strings.ReplaceAll(page.markdown, old, new)
+		if cover, ok := page.metadata["cover"]; ok {
+			switch v := cover.(type) {
+			case string:
+				if v == old {
+					page.metadata["cover"] = new
+				}
+			case map[string]string:
+				if v["image"] == old {
+					v["image"] = new
+					page.metadata["cover"] = v
+				}
+			}
+		}
 	}
 }
 
@@ -209,14 +228,27 @@ func UnserialiazePHParray(array string) any {
 func getMetadata(provider ImageURLProvider, pageURL url.URL, author string, title string, publishDate *time.Time,
 	isDraft bool, categories []string, tags []string, guid *rss.GUID, featuredImageID *string,
 	postFormat *string, customMetaData []wpparser.CustomMetaDatum, taxinomies []wpparser.TaxonomyInfo,
-	postID string, parentPostID *string,
+	postID string, parentPostID *string, options MetadataOptions,
 ) (map[string]any, error) {
 	metadata := make(map[string]any)
-	metadata["url"] = pageURL.Path // Relative URL
-	metadata["author"] = author
-	metadata["title"] = title
-	metadata["post_id"] = postID
-	metadata["parent_post_id"] = parentPostID
+	slug := strings.Trim(strings.TrimPrefix(pageURL.Path, "/blog/"), "/")
+	if slug == "" {
+		slug = titleToSlug(title)
+	}
+	if options.UsePostIDSlug {
+		slug = postID
+	}
+	if options.CleanFrontMatter {
+		metadata["title"] = title
+		metadata["slug"] = slug
+		metadata["_wp_post_id"] = postID
+	} else {
+		metadata["url"] = pageURL.Path // Relative URL
+		metadata["author"] = author
+		metadata["title"] = title
+		metadata["post_id"] = postID
+		metadata["parent_post_id"] = parentPostID
+	}
 	if publishDate != nil {
 		metadata["date"] = publishDate.Format(_hugoDateFormat)
 	}
@@ -246,6 +278,12 @@ func getMetadata(provider ImageURLProvider, pageURL url.URL, author string, titl
 	}
 
 	for _, metadatum := range customMetaData {
+		if options.CleanFrontMatter {
+			if metadatum.Key == "include_ads" {
+				metadata["include_ads"] = isTruthy(metadatum.Value)
+			}
+			continue
+		}
 		if strings.HasPrefix(metadatum.Value, "a:") {
 			phpArray := UnserialiazePHParray(metadatum.Value)
 			if phpArray != nil {
@@ -263,7 +301,7 @@ func getMetadata(provider ImageURLProvider, pageURL url.URL, author string, titl
 		// now we got the original serialized array
 	}
 
-	if guid != nil {
+	if guid != nil && !options.CleanFrontMatter {
 		metadata["guid"] = guid.Value
 	}
 
@@ -279,20 +317,46 @@ func getMetadata(provider ImageURLProvider, pageURL url.URL, author string, titl
 			if err != nil {
 				return nil, fmt.Errorf("error parsing image URL '%s': %w", imageInfo.ImageURL, err)
 			}
+			coverImage := imageInfo.ImageURL
 			if imageURL.Host == pageURL.Host {
 				// If the image URL is on the same host as the page, we can use a relative URL
-				coverInfo["image"] = imageURL.Path
-			} else {
-				coverInfo["image"] = imageInfo.ImageURL
+				coverImage = imageURL.Path
 			}
-			coverInfo["alt"] = imageInfo.Title
-			metadata["cover"] = coverInfo
+			if options.CleanFrontMatter {
+				metadata["cover"] = coverImage
+			} else {
+				coverInfo["image"] = coverImage
+				coverInfo["alt"] = imageInfo.Title
+				metadata["cover"] = coverInfo
+			}
 		}
 	}
-	if postFormat != nil {
+	if postFormat != nil && !options.CleanFrontMatter {
 		metadata["type"] = *postFormat
 	}
+	if options.CloudflareRedirects && slug != postID {
+		metadata["aliases"] = []string{fmt.Sprintf("/blog/%s/", postID)}
+	}
 	return metadata, nil
+}
+
+func titleToSlug(title string) string {
+	str := strings.ToLower(strings.TrimSpace(title))
+	str = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(str, "-")
+	str = strings.Trim(str, "-")
+	if str == "" {
+		return "post"
+	}
+	return str
+}
+
+func isTruthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (page *Page) getCoverImageURL() *string {
@@ -303,15 +367,18 @@ func (page *Page) getCoverImageURL() *string {
 	if !ok {
 		return nil
 	}
-	coverInfo, ok := cover.(map[string]string)
-	if !ok {
+	switch v := cover.(type) {
+	case string:
+		return &v
+	case map[string]string:
+		url1, ok := v["image"]
+		if !ok {
+			return nil
+		}
+		return &url1
+	default:
 		return nil
 	}
-	url1, ok := coverInfo["image"]
-	if !ok {
-		return nil
-	}
-	return &url1
 }
 
 func (page *Page) writeMetadata(w io.Writer) error {

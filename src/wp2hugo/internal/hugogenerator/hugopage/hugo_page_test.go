@@ -81,7 +81,7 @@ func testMarkdownExtractor(t *testing.T, htmlInput string, markdownOutput string
 	t.Helper()
 	url1, err := url.Parse("https://example.com")
 	require.NoError(t, err)
-	page, err := NewPage(nil, *url1, "author", "Title", nil, false, nil, nil, nil, nil, htmlInput, nil, nil, nil, nil, nil, "0", nil)
+	page, err := NewPage(nil, *url1, "author", "Title", nil, false, nil, nil, nil, nil, htmlInput, nil, nil, nil, nil, nil, "0", nil, MetadataOptions{})
 	require.NoError(t, err)
 	md, err := page.getMarkdown(nil, htmlInput, nil)
 	require.NoError(t, err)

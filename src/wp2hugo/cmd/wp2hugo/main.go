@@ -22,6 +22,15 @@ var (
 	downloadAll                    = flag.Bool("download-all", false, "download all media from WordPress library, whether used in content or not")
 	continueOnMediaDownloadFailure = flag.Bool("continue-on-media-download-error", false, "continue processing even if one or more media downloads fail")
 	generateNgnixConfig            = flag.Bool("generate-nginx-config", true, "generate Nginx configuration for the generated Hugo website for redirecting WordPress GUIDs to Hugo URLs")
+	existingHugoSite               = flag.Bool("existing-hugo-site", false, "write into an existing Hugo site instead of creating a new PaperMod site")
+	postsDir                       = flag.String("posts-dir", "content/posts", "post output directory relative to the Hugo site root")
+	postBundles                    = flag.Bool("post-bundles", false, "write posts as Hugo leaf bundles: <post-dir>/index.md")
+	postsOnly                      = flag.Bool("posts-only", false, "only migrate WordPress posts and skip pages/custom post types")
+	usePostIDSlugs                 = flag.Bool("use-post-id-slugs", false, "use WordPress post_id as temporary Hugo slug")
+	cleanFrontMatter               = flag.Bool("clean-frontmatter", false, "write migration-focused front matter and drop WordPress internals")
+	mediaInBundle                  = flag.Bool("media-in-bundle", false, "download post media into each post bundle's _assets directory")
+	cloudflareRedirects            = flag.Bool("cloudflare-redirects", false, "add aliases suitable for Hugo-generated Cloudflare Pages _redirects output")
+	migrateComments                = flag.Bool("migrate-comments", true, "write migrated WordPress comments to data/comments.yaml")
 	authors                        = flag.String("authors", "", "CSV list of author name(s), if provided, only posts by these authors will be processed")
 	// This is useful for repeated executions of the tool to avoid downloading the media files again
 	// Mostly for development and not for the production use
@@ -79,6 +88,17 @@ func getWebsiteInfo(filePath string) (*wpparser.WebsiteInfo, error) {
 func generate(ctx context.Context, info wpparser.WebsiteInfo, outputDirPath string) error {
 	log.Debug().Msgf("Output: %s", outputDirPath)
 	generator := hugogenerator.NewGenerator(outputDirPath, *font, mediacache.New(*mediaCacheDir),
-		*downloadMedia, *downloadAll, *continueOnMediaDownloadFailure, *generateNgnixConfig, info)
+		*downloadMedia, *downloadAll, *continueOnMediaDownloadFailure, *generateNgnixConfig, info,
+		hugogenerator.Options{
+			ExistingHugoSite:    *existingHugoSite,
+			PostsDir:            *postsDir,
+			PostBundles:         *postBundles,
+			PostsOnly:           *postsOnly,
+			UsePostIDSlugs:      *usePostIDSlugs,
+			CleanFrontMatter:    *cleanFrontMatter,
+			MediaInBundle:       *mediaInBundle,
+			CloudflareRedirects: *cloudflareRedirects,
+			MigrateComments:     *migrateComments,
+		})
 	return generator.Generate(ctx)
 }

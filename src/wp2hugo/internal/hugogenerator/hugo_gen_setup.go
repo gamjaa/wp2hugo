@@ -51,6 +51,7 @@ type Generator struct {
 	imageURLProvider hugopage.ImageURLProvider
 	outputDirPath    string
 	wpInfo           wpparser.WebsiteInfo
+	options          Options
 
 	// Media related
 	mediaProvider                  MediaProvider
@@ -67,19 +68,35 @@ type MediaProvider interface {
 	GetReader(ctx context.Context, url string) (io.Reader, error)
 }
 
+type Options struct {
+	ExistingHugoSite    bool
+	PostsDir            string
+	PostBundles         bool
+	PostsOnly           bool
+	UsePostIDSlugs      bool
+	CleanFrontMatter    bool
+	MediaInBundle       bool
+	CloudflareRedirects bool
+	MigrateComments     bool
+}
+
 func NewGenerator(outputDirPath string, fontName string,
 	mediaProvider MediaProvider, downloadMedia bool, downloadAll bool, continueOnMediaDownloadFailure bool,
-	generateNgnixConfig bool, info wpparser.WebsiteInfo,
+	generateNgnixConfig bool, info wpparser.WebsiteInfo, options Options,
 ) *Generator {
 	var ngnixConfig *nginxgenerator.Config
 	if generateNgnixConfig {
 		ngnixConfig = nginxgenerator.NewConfig()
+	}
+	if options.PostsDir == "" {
+		options.PostsDir = "content/posts"
 	}
 	return &Generator{
 		fontName:         fontName,
 		imageURLProvider: newImageURLProvider(info),
 		outputDirPath:    outputDirPath,
 		wpInfo:           info,
+		options:          options,
 
 		// Media related
 		mediaProvider:                  mediaProvider,
@@ -99,8 +116,10 @@ func (g Generator) Generate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err = updateConfig(*siteDir, info); err != nil {
-		return err
+	if !g.options.ExistingHugoSite {
+		if err = updateConfig(*siteDir, info); err != nil {
+			return err
+		}
 	}
 
 	if g.downloadAll {
@@ -115,37 +134,41 @@ func (g Generator) Generate(ctx context.Context) error {
 	}
 
 	// Hierarchical content:
-	if err = g.writePages(ctx, *siteDir, info); err != nil {
-		return err
+	if !g.options.PostsOnly {
+		if err = g.writePages(ctx, *siteDir, info); err != nil {
+			return err
+		}
+		if err = g.writeCustomPosts(ctx, *siteDir, info); err != nil {
+			return err
+		}
 	}
-	if err = g.writeCustomPosts(ctx, *siteDir, info); err != nil {
-		return err
-	}
-	if err = setupArchivePage(*siteDir); err != nil {
-		return err
-	}
-	if err = setupSearchPage(*siteDir); err != nil {
-		return err
-	}
-	if err = setupFont(*siteDir, g.fontName); err != nil {
-		return err
-	}
-	if err = WriteCustomShortCodes(*siteDir); err != nil {
-		return err
-	}
-	if err = WriteCustomPartials(*siteDir); err != nil {
-		return err
+	if !g.options.ExistingHugoSite {
+		if err = setupArchivePage(*siteDir); err != nil {
+			return err
+		}
+		if err = setupSearchPage(*siteDir); err != nil {
+			return err
+		}
+		if err = setupFont(*siteDir, g.fontName); err != nil {
+			return err
+		}
+		if err = WriteCustomShortCodes(*siteDir); err != nil {
+			return err
+		}
+		if err = WriteCustomPartials(*siteDir); err != nil {
+			return err
+		}
+
+		if err = setupLibraryData(*siteDir, info); err != nil {
+			return err
+		}
+
+		if err = setupRssFeedFormat(*siteDir); err != nil {
+			return err
+		}
 	}
 
-	if err = setupLibraryData(*siteDir, info); err != nil {
-		return err
-	}
-
-	if err = setupRssFeedFormat(*siteDir); err != nil {
-		return err
-	}
-
-	if g.downloadMedia {
+	if g.downloadMedia && !g.options.ExistingHugoSite {
 		url1 := info.Link().Scheme + "://" + info.Link().Host + "/favicon.ico"
 		media, err := g.mediaProvider.GetReader(ctx, url1)
 		if err != nil {
@@ -160,7 +183,7 @@ func (g Generator) Generate(ctx context.Context) error {
 		}
 	}
 
-	if g.generateNgnixConfig {
+	if g.generateNgnixConfig && !g.options.CloudflareRedirects {
 		nginxConfigPath := path.Join(*siteDir, "nginx.conf")
 		if err = os.WriteFile(nginxConfigPath, []byte(g.ngnixConfig.Generate()), 0o600); err != nil {
 			return err
@@ -178,6 +201,13 @@ func (g Generator) Generate(ctx context.Context) error {
 }
 
 func (g Generator) setupHugo(ctx context.Context, outputDirPath string) (*string, error) {
+	if g.options.ExistingHugoSite {
+		if err := os.MkdirAll(outputDirPath, 0o700); err != nil {
+			return nil, fmt.Errorf("error creating output directory '%s': %w", outputDirPath, err)
+		}
+		return &outputDirPath, nil
+	}
+
 	// Replace spaces and colons with dashes
 	timeFormat := time.Now().Format(
 		strings.ReplaceAll(strings.ReplaceAll(time.DateTime, " ", "-"), ":", "-"))
@@ -276,7 +306,7 @@ func (g Generator) downloadAllMedia(ctx context.Context, outputDirPath string, i
 	prefixes = append(prefixes, "http://www."+hostname)
 
 	for _, attachment := range info.Attachments() {
-		if _, err := downloadMedia(ctx, *attachment.GetAttachmentURL(), outputDirPath, prefixes, g, info.Link()); err != nil {
+		if _, err := downloadMedia(ctx, *attachment.GetAttachmentURL(), outputDirPath, nil, prefixes, g, info.Link()); err != nil {
 			return err
 		}
 	}
@@ -570,21 +600,73 @@ func getFilePath(pagesDir string, baseFileName string) string {
 	return pagePath
 }
 
+func sanitizePathSegment(s string) string {
+	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", "*", "-", "?", "-", "\"", "-", "<", "-", ">", "-", "|", "-")
+	s = strings.TrimSpace(replacer.Replace(s))
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	if s == "" {
+		return "untitled"
+	}
+	return s
+}
+
+func sanitizeMediaFileName(s string) string {
+	if decoded, err := url.PathUnescape(s); err == nil {
+		s = decoded
+	}
+	return sanitizePathSegment(s)
+}
+
+func postBundleDirName(post wpparser.PostInfo) string {
+	datePrefix := "undated"
+	if post.PublishDate != nil {
+		datePrefix = post.PublishDate.Format("2006-01-02")
+	}
+	return sanitizePathSegment(fmt.Sprintf("%s %s", datePrefix, post.Title))
+}
+
+func getUniqueDirPath(baseDir string, postID string) string {
+	if !utils.FileExists(baseDir) {
+		return baseDir
+	}
+	candidate := fmt.Sprintf("%s-%s", baseDir, postID)
+	if !utils.FileExists(candidate) {
+		return candidate
+	}
+	for i := 1; ; i++ {
+		candidate = fmt.Sprintf("%s-%s-%d", baseDir, postID, i)
+		if !utils.FileExists(candidate) {
+			return candidate
+		}
+	}
+}
+
 func (g Generator) writePosts(ctx context.Context, outputDirPath string, info wpparser.WebsiteInfo) error {
 	if len(info.Posts()) == 0 {
 		log.Info().Msg("No posts to write")
 		return nil
 	}
 
-	postsDir := path.Join(outputDirPath, "content", "posts")
+	postsDir := path.Join(outputDirPath, g.options.PostsDir)
 	if err := utils.CreateDirIfNotExist(postsDir); err != nil {
 		return err
 	}
 
 	// Write posts
 	for _, post := range info.Posts() {
-		filename := post.GetFileInfo().FileNameWithLanguage()
-		postPath := getFilePath(postsDir, filename)
+		var postPath string
+		if g.options.PostBundles {
+			postDir := getUniqueDirPath(path.Join(postsDir, postBundleDirName(post)), post.PostID)
+			if err := utils.CreateDirIfNotExist(postDir); err != nil {
+				return err
+			}
+			postPath = path.Join(postDir, "index.md")
+		} else {
+			filename := post.GetFileInfo().FileNameWithLanguage()
+			postPath = getFilePath(postsDir, filename)
+		}
 		if err := g.writePage(ctx, outputDirPath, postPath, post.CommonFields, info); err != nil {
 			return err
 		}
@@ -687,8 +769,14 @@ func (g Generator) writePage(ctx context.Context, outputMediaDirPath string, pag
 		return fmt.Errorf("error creating Hugo page: %w", err)
 	}
 
+	var bundleAssetsDir *string
+	if g.options.MediaInBundle {
+		assetsDir := path.Join(path.Dir(pagePath), "_assets")
+		bundleAssetsDir = &assetsDir
+	}
+
 	if g.downloadMedia {
-		urlReplacements, err := g.downloadPageMedia(ctx, outputMediaDirPath, p, pageURL)
+		urlReplacements, err := g.downloadPageMedia(ctx, outputMediaDirPath, bundleAssetsDir, p, pageURL)
 		if err != nil {
 			return err
 		} else {
@@ -711,8 +799,10 @@ func (g Generator) writePage(ctx context.Context, outputMediaDirPath string, pag
 
 	log.Info().Msgf("Page written: %s", pagePath)
 
-	if err := updateComments(outputMediaDirPath, page, info); err != nil {
-		return fmt.Errorf("error saving comments: %w", err)
+	if g.options.MigrateComments {
+		if err := updateComments(outputMediaDirPath, page, info); err != nil {
+			return fmt.Errorf("error saving comments: %w", err)
+		}
 	}
 
 	return nil
@@ -725,10 +815,15 @@ func (g Generator) newHugoPage(pageURL *url.URL, page wpparser.CommonFields) (*h
 		page.PublishStatus == wpparser.PublishStatusDraft || page.PublishStatus == wpparser.PublishStatusPending,
 		page.Categories, page.Tags, g.wpInfo.GetAttachmentsForPost(page.PostID),
 		page.Footnotes, page.Content, page.GUID, page.FeaturedImageID, page.PostFormat,
-		page.CustomMetaData, page.Taxonomies, page.PostID, page.PostParentID)
+		page.CustomMetaData, page.Taxonomies, page.PostID, page.PostParentID,
+		hugopage.MetadataOptions{
+			UsePostIDSlug:       g.options.UsePostIDSlugs,
+			CleanFrontMatter:     g.options.CleanFrontMatter,
+			CloudflareRedirects:  g.options.CloudflareRedirects,
+		})
 }
 
-func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, prefixes []string, g Generator, pageURL *url.URL) (map[string]string, error) {
+func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, bundleAssetsDir *string, prefixes []string, g Generator, pageURL *url.URL) (map[string]string, error) {
 	// Uniformize protocol-less links: add protocol
 	if strings.HasPrefix(link, "//") {
 		link = strings.Replace(link, "//", pageURL.Scheme+"://", 1)
@@ -752,6 +847,15 @@ func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, 
 	relativeLink := link
 	outputFilePath := fmt.Sprintf("%s/static/%s", outputMediaDirPath,
 		strings.TrimSuffix(strings.Split(link, "?")[0], "/"))
+	urlReplacement := make(map[string]string)
+	if bundleAssetsDir != nil {
+		fileName := sanitizeMediaFileName(path.Base(strings.Split(link, "?")[0]))
+		if fileName == "." || fileName == "/" || fileName == "untitled" {
+			fileName = "attachment"
+		}
+		outputFilePath = path.Join(*bundleAssetsDir, fileName)
+		urlReplacement[relativeLink] = "./_assets/" + fileName
+	}
 
 	if strings.HasPrefix(link, "http") {
 		// do nothing in case of absolute URL
@@ -770,8 +874,6 @@ func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, 
 	fullResLink := _resizedMedia.ReplaceAllString(link, "$1.$2")
 	media, err := g.mediaProvider.GetReader(ctx, fullResLink)
 
-	urlReplacement := make(map[string]string)
-
 	if err != nil {
 		// If full-res image not found, try again with resized one.
 		if strings.Compare(fullResLink, link) != 0 {
@@ -781,9 +883,14 @@ func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, 
 				Msg("full-resolution image file not found, falling back to resized thumbnail")
 			media, err = g.mediaProvider.GetReader(ctx, link)
 		} else {
-			new_link := _resizedMedia.ReplaceAllString(relativeLink, "$1.$2")
-			urlReplacement[relativeLink] = new_link
-			urlReplacement[link] = new_link
+			newLink := _resizedMedia.ReplaceAllString(relativeLink, "$1.$2")
+			if bundleAssetsDir != nil {
+				fileName := sanitizeMediaFileName(path.Base(strings.Split(newLink, "?")[0]))
+				outputFilePath = path.Join(*bundleAssetsDir, fileName)
+				newLink = "./_assets/" + fileName
+			}
+			urlReplacement[relativeLink] = newLink
+			urlReplacement[link] = newLink
 		}
 	} else {
 		// If full-res image found, update target file path too
@@ -794,9 +901,14 @@ func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, 
 				Str("link", link).
 				Msg("resized thumbnail was replaced by full-resolution image")
 
-			new_link := _resizedMedia.ReplaceAllString(relativeLink, "$1.$2")
-			urlReplacement[relativeLink] = new_link
-			urlReplacement[link] = new_link
+			newLink := _resizedMedia.ReplaceAllString(relativeLink, "$1.$2")
+			if bundleAssetsDir != nil {
+				fileName := sanitizeMediaFileName(path.Base(strings.Split(newLink, "?")[0]))
+				outputFilePath = path.Join(*bundleAssetsDir, fileName)
+				newLink = "./_assets/" + fileName
+			}
+			urlReplacement[relativeLink] = newLink
+			urlReplacement[link] = newLink
 		}
 	}
 
@@ -842,7 +954,7 @@ func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, 
 	return urlReplacement, nil
 }
 
-func (g Generator) downloadPageMedia(ctx context.Context, outputMediaDirPath string, p *hugopage.Page, pageURL *url.URL) (map[string]string, error) {
+func (g Generator) downloadPageMedia(ctx context.Context, outputMediaDirPath string, bundleAssetsDir *string, p *hugopage.Page, pageURL *url.URL) (map[string]string, error) {
 	links := p.WPMediaLinks()
 	log.Debug().
 		Str("page", pageURL.String()).
@@ -864,7 +976,7 @@ func (g Generator) downloadPageMedia(ctx context.Context, outputMediaDirPath str
 	urlReplacements := make(map[string]string)
 
 	for _, link := range links {
-		if replacement, err := downloadMedia(ctx, link, outputMediaDirPath, prefixes, g, pageURL); err != nil {
+		if replacement, err := downloadMedia(ctx, link, outputMediaDirPath, bundleAssetsDir, prefixes, g, pageURL); err != nil {
 			return nil, err
 		} else {
 			maps.Copy(urlReplacements, replacement)

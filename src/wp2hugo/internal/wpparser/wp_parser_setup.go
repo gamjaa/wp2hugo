@@ -710,9 +710,9 @@ func isTaxonomy(taxonomy *rss.Category, taxonomies []TaxonomyInfo) *TaxonomyInfo
 	return nil
 }
 
-// NormalizeCategoryName removes space from the category name and converts it to lowercase
+// NormalizeCategoryName trims the category name while preserving the source label.
 func NormalizeCategoryName(name string) string {
-	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+	return strings.TrimSpace(name)
 }
 
 func getPageInfo(item *rss.Item, taxonomies []TaxonomyInfo) (*PageInfo, error) {
