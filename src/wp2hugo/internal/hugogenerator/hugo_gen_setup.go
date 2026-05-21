@@ -72,8 +72,10 @@ type MediaProvider interface {
 type Options struct {
 	ExistingHugoSite    bool
 	PostsDir            string
+	PagesDir            string
 	PostBundles         bool
 	PostsOnly           bool
+	PagesOnly           bool
 	UsePostIDSlugs      bool
 	CleanFrontMatter    bool
 	MediaInBundle       bool
@@ -91,6 +93,9 @@ func NewGenerator(outputDirPath string, fontName string,
 	}
 	if options.PostsDir == "" {
 		options.PostsDir = "content/posts"
+	}
+	if options.PagesDir == "" {
+		options.PagesDir = "content/pages"
 	}
 	return &Generator{
 		fontName:         fontName,
@@ -129,9 +134,11 @@ func (g Generator) Generate(ctx context.Context) error {
 		}
 	}
 
-	// Non-hierarchical content:
-	if err = g.writePosts(ctx, *siteDir, info); err != nil {
-		return err
+	if !g.options.PagesOnly {
+		// Non-hierarchical content:
+		if err = g.writePosts(ctx, *siteDir, info); err != nil {
+			return err
+		}
 	}
 
 	// Hierarchical content:
@@ -139,8 +146,10 @@ func (g Generator) Generate(ctx context.Context) error {
 		if err = g.writePages(ctx, *siteDir, info); err != nil {
 			return err
 		}
-		if err = g.writeCustomPosts(ctx, *siteDir, info); err != nil {
-			return err
+		if !g.options.PagesOnly {
+			if err = g.writeCustomPosts(ctx, *siteDir, info); err != nil {
+				return err
+			}
 		}
 	}
 	if !g.options.ExistingHugoSite {
@@ -315,7 +324,7 @@ func (g Generator) downloadAllMedia(ctx context.Context, outputDirPath string, i
 	return nil
 }
 
-func getPagePath(outputDirPath string, page wpparser.CommonFields, posts []wpparser.CommonFields) (string, error) {
+func getPagePath(outputDirPath string, contentDir string, page wpparser.CommonFields, posts []wpparser.CommonFields) (string, error) {
 	pagePath := ""
 
 	if page.PostParentID != nil {
@@ -327,7 +336,7 @@ func getPagePath(outputDirPath string, page wpparser.CommonFields, posts []wppar
 			// post type than their parent product. All in all, that seems generic enough.
 			if parent.PostID == *page.PostParentID {
 				parentFileName := parent.GetFileInfo().FileNameNoLanguage()
-				pagesDir := path.Join(outputDirPath, "content", *parent.PostType+"s", parentFileName)
+				pagesDir := path.Join(outputDirPath, contentDir, parentFileName)
 				if err := utils.CreateDirIfNotExist(pagesDir); err != nil {
 					return pagePath, err
 				}
@@ -347,7 +356,7 @@ func getPagePath(outputDirPath string, page wpparser.CommonFields, posts []wppar
 	if pagePath == "" {
 		// Create a branch page bundle using using a dynamic posttype subfolder
 		lang := page.GetFileInfo().Language()
-		pagesDir := path.Join(outputDirPath, "content", *page.PostType+"s", page.GetFileInfo().FileNameNoLanguage())
+		pagesDir := path.Join(outputDirPath, contentDir, page.GetFileInfo().FileNameNoLanguage())
 		if err := utils.CreateDirIfNotExist(pagesDir); err != nil {
 			return pagePath, err
 		}
@@ -460,7 +469,7 @@ func (g Generator) writePages(ctx context.Context, outputDirPath string, info wp
 		return nil
 	}
 
-	pagesDir := path.Join(outputDirPath, "content", "pages")
+	pagesDir := path.Join(outputDirPath, g.options.PagesDir)
 	if err := utils.CreateDirIfNotExist(pagesDir); err != nil {
 		return err
 	}
@@ -476,7 +485,7 @@ func (g Generator) writePages(ctx context.Context, outputDirPath string, info wp
 		for i, p := range info.Pages() {
 			pages[i] = p.CommonFields
 		}
-		if pagePath, err := getPagePath(outputDirPath, page.CommonFields, pages); err != nil {
+		if pagePath, err := getPagePath(outputDirPath, g.options.PagesDir, page.CommonFields, pages); err != nil {
 			return err
 		} else {
 			if err := g.writePage(ctx, outputDirPath, pagePath, page.CommonFields, info); err != nil {
@@ -488,7 +497,9 @@ func (g Generator) writePages(ctx context.Context, outputDirPath string, info wp
 	}
 
 	// Properly set page bundle type
-	sanitizePostType(outputDirPath, "pages")
+	if err := sanitizePageBundles(pagesDir); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -510,7 +521,8 @@ func (g Generator) writeCustomPosts(ctx context.Context, outputDirPath string, i
 		for i, cp := range info.CustomPosts() {
 			customPosts[i] = cp.CommonFields
 		}
-		if pagePath, err := getPagePath(outputDirPath, page.CommonFields, customPosts); err != nil {
+		contentDir := path.Join("content", *page.PostType+"s")
+		if pagePath, err := getPagePath(outputDirPath, contentDir, page.CommonFields, customPosts); err != nil {
 			return err
 		} else {
 			if err := g.writePage(ctx, outputDirPath, pagePath, page.CommonFields, info); err != nil {

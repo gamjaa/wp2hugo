@@ -24,8 +24,10 @@ var (
 	generateNgnixConfig            = flag.Bool("generate-nginx-config", true, "generate Nginx configuration for the generated Hugo website for redirecting WordPress GUIDs to Hugo URLs")
 	existingHugoSite               = flag.Bool("existing-hugo-site", false, "write into an existing Hugo site instead of creating a new PaperMod site")
 	postsDir                       = flag.String("posts-dir", "content/posts", "post output directory relative to the Hugo site root")
+	pagesDir                       = flag.String("pages-dir", "content/pages", "page output directory relative to the Hugo site root")
 	postBundles                    = flag.Bool("post-bundles", false, "write posts as Hugo leaf bundles: <post-dir>/index.md")
 	postsOnly                      = flag.Bool("posts-only", false, "only migrate WordPress posts and skip pages/custom post types")
+	pagesOnly                      = flag.Bool("pages-only", false, "only migrate WordPress pages and skip posts/custom post types")
 	usePostIDSlugs                 = flag.Bool("use-post-id-slugs", false, "use WordPress post_id as temporary Hugo slug")
 	cleanFrontMatter               = flag.Bool("clean-frontmatter", false, "write migration-focused front matter and drop WordPress internals")
 	mediaInBundle                  = flag.Bool("media-in-bundle", false, "download post media into each post bundle's _assets directory")
@@ -54,6 +56,9 @@ func main() {
 	}
 	if len(*outputDir) == 0 {
 		log.Fatal().Msg("Output directory is required")
+	}
+	if *postsOnly && *pagesOnly {
+		log.Fatal().Msg("Only one of -posts-only or -pages-only can be set")
 	}
 	err := handle(context.Background(), *sourceFile)
 	if err != nil {
@@ -92,8 +97,10 @@ func generate(ctx context.Context, info wpparser.WebsiteInfo, outputDirPath stri
 		hugogenerator.Options{
 			ExistingHugoSite:    *existingHugoSite,
 			PostsDir:            *postsDir,
+			PagesDir:            *pagesDir,
 			PostBundles:         *postBundles,
 			PostsOnly:           *postsOnly,
+			PagesOnly:           *pagesOnly,
 			UsePostIDSlugs:      *usePostIDSlugs,
 			CleanFrontMatter:    *cleanFrontMatter,
 			MediaInBundle:       *mediaInBundle,
