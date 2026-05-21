@@ -80,3 +80,27 @@ func TestWritePageCreatesParentDirectory(t *testing.T) {
 	require.NoError(t, generator.writePage(context.Background(), t.TempDir(), pagePath, page, info))
 	require.FileExists(t, pagePath)
 }
+
+func TestPrivatePostWritesDraftFrontMatter(t *testing.T) {
+	t.Parallel()
+
+	info := wpparser.WebsiteInfo{}
+	generator := NewGenerator(t.TempDir(), "", nil, false, false, false, false, info, Options{
+		MigrateComments: false,
+	})
+	pagePath := filepath.Join(t.TempDir(), "private-post", "index.md")
+	page := wpparser.CommonFields{
+		PostID:        "1",
+		Title:         "Private post",
+		Link:          "https://example.net/private-post",
+		PublishStatus: wpparser.PublishStatusPrivate,
+		GUID:          &rss.GUID{Value: "https://example.net/?p=1"},
+		Content:       "private content",
+	}
+
+	require.NoError(t, generator.writePage(context.Background(), t.TempDir(), pagePath, page, info))
+
+	content, err := os.ReadFile(pagePath)
+	require.NoError(t, err)
+	require.Contains(t, string(content), `draft: "true"`)
+}

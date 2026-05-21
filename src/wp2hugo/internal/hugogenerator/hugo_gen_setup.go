@@ -818,7 +818,7 @@ func (g Generator) newHugoPage(pageURL *url.URL, page wpparser.CommonFields) (*h
 	return hugopage.NewPage(
 		g.imageURLProvider,
 		*pageURL, page.Author, page.Title, page.PublishDate,
-		page.PublishStatus == wpparser.PublishStatusDraft || page.PublishStatus == wpparser.PublishStatusPending,
+		isDraftPublishStatus(page.PublishStatus),
 		page.Categories, page.Tags, g.wpInfo.GetAttachmentsForPost(page.PostID),
 		page.Footnotes, page.Content, page.GUID, page.FeaturedImageID, page.PostFormat,
 		page.CustomMetaData, page.Taxonomies, page.PostID, page.PostParentID,
@@ -827,6 +827,12 @@ func (g Generator) newHugoPage(pageURL *url.URL, page wpparser.CommonFields) (*h
 			CleanFrontMatter:    g.options.CleanFrontMatter,
 			CloudflareRedirects: g.options.CloudflareRedirects,
 		})
+}
+
+func isDraftPublishStatus(status wpparser.PublishStatus) bool {
+	return status == wpparser.PublishStatusDraft ||
+		status == wpparser.PublishStatusPending ||
+		status == wpparser.PublishStatusPrivate
 }
 
 func downloadMedia(ctx context.Context, link string, outputMediaDirPath string, bundleAssetsDir *string, prefixes []string, g Generator, pageURL *url.URL) (map[string]string, error) {
