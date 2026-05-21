@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -606,6 +607,7 @@ func sanitizePathSegment(s string) string {
 	for strings.Contains(s, "  ") {
 		s = strings.ReplaceAll(s, "  ", " ")
 	}
+	s = strings.TrimRight(s, ". ")
 	if s == "" {
 		return "untitled"
 	}
@@ -784,6 +786,10 @@ func (g Generator) writePage(ctx context.Context, outputMediaDirPath string, pag
 		}
 	}
 
+	if err := utils.CreateDirIfNotExist(filepath.Dir(pagePath)); err != nil {
+		return err
+	}
+
 	w, err := os.OpenFile(pagePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("error opening page file: %w", err)
@@ -818,8 +824,8 @@ func (g Generator) newHugoPage(pageURL *url.URL, page wpparser.CommonFields) (*h
 		page.CustomMetaData, page.Taxonomies, page.PostID, page.PostParentID,
 		hugopage.MetadataOptions{
 			UsePostIDSlug:       g.options.UsePostIDSlugs,
-			CleanFrontMatter:     g.options.CleanFrontMatter,
-			CloudflareRedirects:  g.options.CloudflareRedirects,
+			CleanFrontMatter:    g.options.CleanFrontMatter,
+			CloudflareRedirects: g.options.CloudflareRedirects,
 		})
 }
 
